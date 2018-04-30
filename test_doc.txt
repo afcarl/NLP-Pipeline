@@ -1,0 +1,3 @@
+The quick brown fox jumped over the lazy dog.
+Do you like going to the store?
+I want to improve my programming skills!

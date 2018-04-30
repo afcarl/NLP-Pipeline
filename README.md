@@ -1,2 +1,3 @@
 # SpacyHelper
-Spacy helper functions to simplify tokenizing text
+
+Under Development! Feel free to check it out though.
