@@ -1,4 +1,4 @@
-# SpacyHelper
+# NLP Pipeline
 
 The spacy helper file holds a class called SpacyProcessor. This class
 aims to make using SpaCy a little bit easier. Instead of having to
