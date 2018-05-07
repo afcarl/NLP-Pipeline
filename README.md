@@ -55,3 +55,21 @@ in order to run this function.
 ```python
 SP.write_data_to_tfrecords('mydata.tfrecords.gzip')
 ```
+
+#### Initialize Gensim Model With Tokenized Data
+
+After tokenizing the data, you can run this function to return a gensim doc2vec model
+and properly formatted text data to train your gensim model.
+
+***NOTE:*** Make sure you specify save_tokenized_text_data=True when initializing the class!
+
+```python
+# Initialize spacy processor
+SP = SpacyProcessor(textfile, 100, save_tokenized_text_data=True)
+
+# Get model with tokenized and formatted text data
+model, data = SP.load_gensim_doc2vec()
+
+# Train your model immediately
+model.train(data, total_examples=SP.num_docs, epochs=10)
+```

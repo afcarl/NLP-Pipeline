@@ -357,7 +357,8 @@ class SpacyProcessor:
         for i, d in enumerate(self.text_data):
             doc2vec_data.append(TaggedDocument(d, [label[i]]))
 
-        model = Doc2Vec(vector_size=vector_size,
+        model = Doc2Vec(doc2vec_data,
+                        vector_size=vector_size,
                         window=window,
                         min_count=min_count,
                         workers=workers)
