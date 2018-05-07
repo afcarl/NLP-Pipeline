@@ -8,6 +8,8 @@ from gensim.models import Doc2Vec
 import tensorflow as tf
 import os
 
+import sys
+
 '''
 TODO - 
 
@@ -19,8 +21,8 @@ TODO -
 '''
 class SpacyProcessor:
 
-    def __init__(self, textfile, max_length, gn_path=None, use_google_news=False,
-                nlp=None, skip="<SKIP>", merge=False, num_threads=8, delete_punctuation=False,
+    def __init__(self, textfile, max_length, tokenize_sentences = False, num_sentences = 4, gn_path=None, use_google_news=False,
+                nlp=None, nlp_object_path = None, vectors=None, skip="<SKIP>", merge=False, num_threads=8, delete_punctuation=False,
                 token_type="lower", skip_oov=False, save_tokenized_text_data=False, bad_deps=("amod", "compound")):
         
 
@@ -31,9 +33,12 @@ class SpacyProcessor:
         Args:
             textfile (str): Path to the line delimited text file
             max_length (int): Length to limit/pad sequences to
+            tokenize_sentences (bool, optional): Description
+            num_sentences (int, optional): Description
             gn_path (str): Path to google news vectors bin file if nlp object has not been saved yet
             use_google_news (bool, optional): If True, we will use google news vectors stored at gn_path (or elsewhere)
-            nlp (None, optional): Path to spacy NLP object to load. TODO - Turn this into nlp object itself, specify path separately
+            nlp (None, optional): Pre-initialized Spacy NLP object 
+            nlp_object_path (None, optional): When passed, it will load the nlp object found in this path
             skip (str, optional): Short documents will be padded with this variable up until max_length
             merge (bool, optional): When True, we will merge noun phrases and named entities into single tokens
             num_threads (int, optional): Number of threads to parallelize the pipeline
@@ -42,6 +47,8 @@ class SpacyProcessor:
             skip_oov (bool, optional): When set to true, it will replace out of vocabulary words with skip token. 
                                        Note: Setting this to false when planning to initialize random vectors will allow for learning
                                        the out of vocabulary words/phrases.
+            save_tokenized_text_data (bool, optional): Description
+            bad_deps (tuple, optional): Description
         """
 
 
@@ -58,23 +65,26 @@ class SpacyProcessor:
         self.skip_oov = skip_oov
         self.save_tokenized_text_data = save_tokenized_text_data
         self.bad_deps = bad_deps
+        self.tokenize_sentences = tokenize_sentences
+        self.num_sentences = num_sentences
+        self.nlp_object_path = nlp_object_path
+        self.vectors = vectors
 
-        # TODO - This is a mess. Clean it up.
-        if self.nlp == None:
-            if use_google_news:
+        # If a spacy nlp object is not passed to init
+        if self.nlp==None:
+            # Load nlp object from path provided
+            if nlp_object_path:
+                self.nlp=spacy.load(self.nlp_object_path)
+            # Load google news from binary file 
+            elif self.gn_path:
                 self.load_google_news()
+            # Use vectors path from saved dist-packages location
+            elif self.vectors:
+                self.nlp = spacy.load('en_core_web_lg', vectors=self.vectors)
+            # If nothing is specified, load spacy model
             else:
                 self.nlp = spacy.load('en_core_web_lg')
-        else:
-            if os.path.exists(self.nlp):
-                # This would load a saved spacy object from nlp path
-                #self.nlp = spacy.load(self.nlp)
-                # This loads spacy object en_core_web_lg with the addition of saved gn vectors
-                self.nlp = spacy.load("en_core_web_lg", vectors="en_google")
-            elif use_google_news:
-                self.load_google_news()
-            else:
-                self.nlp = spacy.load('en_core_web_lg')
+
         self.tokenize()
 
     def load_google_news(self):
@@ -126,8 +136,9 @@ class SpacyProcessor:
         if self.save_tokenized_text_data:
             self.text_data = []
 
-        # REMOVE THIS...It should be at the doc.to_array line where LOWER is
-        attr = LOWER
+        if self.tokenize_sentences:
+            self.sentence_tokenize()
+            return
         for row, doc in enumerate(self.nlp.pipe(self.texts, n_threads=self.num_threads, batch_size=10000)):
             try:
                 if self.merge:
@@ -245,7 +256,155 @@ class SpacyProcessor:
                 except:
                     pass
 
+    def sentence_tokenize(self,):        
+        # Data will have shape [Num Docs, None, Seq_Len]
+        self.data = np.zeros([self.num_docs, self.num_sentences, self.max_length], dtype=np.uint64)
+        self.data[:] = self.skip
 
+        for row, full_doc in enumerate(self.nlp.pipe(self.texts, n_threads=self.num_threads, batch_size=10000)):
+
+            # Split doc into sentences
+            sentences = [sent for sent in full_doc.sents]
+
+            # For SENTENCE in sentences
+            for sent_idx, doc in enumerate(sentences):
+                # We don't want to process more than num sentences for each doc.
+                # We limit the number of sentences tokenized to num_sentences
+                if sent_idx >= self.num_sentences:
+                    continue
+                try:
+                    if self.merge:
+                        # Make list to hold merged phrases. Necessary to avoid buggy spacy merge implementation
+                        phrase_list = []
+                        # Merge noun phrases into single tokens
+                        for phrase in list(doc.noun_chunks):
+                            while len(phrase) > 1 and phrase[0].dep_ not in self.bad_deps:
+                                phrase = phrase[1:]
+                            if len(phrase) > 1:
+                                phrase_list.append(phrase)
+                        
+                        # Merge phrases onto doc using doc.merge. Phrase.merge breaks.
+                        if len(phrase_list) > 0:
+                            for _phrase in phrase_list:
+                                doc.merge(start_idx=_phrase[0].idx,
+                                          end_idx=_phrase[len(_phrase) - 1].idx + len(_phrase[len(_phrase) - 1]),
+                                          tag=_phrase[0].tag_,
+                                          lemma='_'.join([token.text for token in _phrase]),
+                                          ent_type=_phrase[0].ent_type_)
+                        ent_list = []
+                        # Iterate over named entities
+                        for ent in doc.ents:
+                            if len(ent) > 1:
+                                ent_list.append(ent)
+                        
+                        # Merge entities onto doc using doc.merge. ent.merge breaks.
+                        if len(ent_list) > 0:
+                            for _ent in ent_list:
+                                doc.merge(start_idx=_ent[0].idx,
+                                          end_idx=_ent[len(_ent) - 1].idx + len(_ent[len(_ent) - 1]),
+                                          tag=_ent.root.tag_,
+                                          lemma='_'.join([token.text for token in _ent]),
+                                          ent_type=_ent[0].ent_type_)
+                    # Create temp list for holding doc text
+                    if self.save_tokenized_text_data:
+                        doc_text = []
+
+                    # Loop through tokens in doc
+                    for token in doc:
+                        # Replaces spaces between phrases with underscore
+                        text = token.text.replace(" ", "_")
+                        # Get the string token for the given token type
+                        if self.token_type=="lower":
+                            _token = token.lower_
+                        elif self.token_type=="lemma":
+                            _token = token.lemma_
+                        else:
+                            _token = token.orth_
+
+                        # Add token to spacy string list so we can use oov as known hash tokens
+                        if token.is_oov:
+                            self.nlp.vocab.strings.add(_token)
+
+                        if self.save_tokenized_text_data:
+                            doc_text.append(_token)
+
+                    if self.save_tokenized_text_data:
+                        self.text_data.append(doc_text)
+
+                    # Options for how to tokenize
+                    if self.token_type=="lower":
+                        dat = doc.to_array([LOWER, LIKE_EMAIL, LIKE_URL, IS_OOV, IS_PUNCT])
+                    elif self.token_type=="lemma":
+                        dat = doc.to_array([LEMMA, LIKE_EMAIL, LIKE_URL, IS_OOV, IS_PUNCT])
+                    else:
+                        dat = doc.to_array([ORTH, LIKE_EMAIL, LIKE_URL, IS_OOV, IS_PUNCT])
+
+                    if len(dat) > 0:
+                        msg = "Negative indices reserved for special tokens"
+                        assert dat.min() >= 0, msg
+                        if self.skip_oov:
+                            # Get Indexes of email and URL and oov tokens
+                            idx = (dat[:, 1] > 0) | (dat[:, 2] > 0) | (dat[:, 3] > 0)
+                        else:
+                            # Get Indexes of email and URL tokens
+                            idx = (dat[:, 1] > 0) | (dat[:, 2] > 0)                    
+                        # Replace email and URL tokens with skip token
+                        dat[idx] = self.skip
+                        # Delete punctuation
+                        if self.delete_punctuation:
+                            delete = np.where(dat[:,3]==1)
+                            dat = np.delete(dat, delete, 0)
+
+
+                        length = min(len(dat), self.max_length)
+
+                        # Get sentence token data
+                        #sent_data[:length] = dat[:length, 0].ravel()
+                        self.data[row, sent_idx, :length] = dat[:length, 0].ravel()
+                        # Append sentence data to doc data
+                        #doc_data.append(sent_data.tolist())
+
+                except Exception as e:
+                    #exc_type, exc_obj, exc_tb = sys.exc_info()
+                    #fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+                    #print(row, exc_type, e, exc_tb.tb_lineno)
+                    print("Warning! Document", row, "broke, likely due to spaCy merge issues.\nMore info at thier github, issues #1547 and #1474")
+                    self.purged_docs.append(row)
+                    continue
+   
+        if len(self.purged_docs) > 0:
+            # If necessary, delete documents that failed to tokenize correctly.
+            self.data = np.delete(self.data, self.purged_docs, 0).astype(np.uint64)
+
+        self.uniques = np.array([], dtype=np.uint64)
+        # Get unique data by any means necessary for now...
+        for document in range(self.data.shape[0]):
+            for sentence in range(self.data[document].shape[0]):
+                self.uniques = np.append(self.uniques, self.data[document][sentence])
+
+        # Unique tokens
+        #self.uniques = np.unique(self.data.flatten())
+        # Saved Spacy Vocab
+        self.vocab = self.nlp.vocab
+        # Making an idx to word mapping for vocab
+        self.hash_to_word = {}
+        # Manually putting in this hash for the padding ID
+        self.hash_to_word[self.skip] = '<SKIP>'
+        # If lemma, manually put in hash for the pronoun ID
+        if self.token_type=="lemma":
+            self.hash_to_word[self.nlp.vocab.strings["-PRON-"]] = "-PRON-"
+        
+        for v in self.uniques:
+            if v!= self.skip:
+                try:
+                    if self.token_type == "lower":
+                        self.hash_to_word[v] = self.nlp.vocab[v].lower_
+                    elif self.token_type == "lemma":
+                        self.hash_to_word[v] = self.nlp.vocab[v].lemma_
+                    else:
+                        self.hash_to_word[v] = self.nlp.vocab[v].orth_
+                except:
+                    pass
 
     def _compute_embed_matrix(self, random=False, embed_size=256, compute_tensor=False, tf_as_variable=True):
         """Computes the embedding matrix in a couple of ways. You can either initialize it randomly
