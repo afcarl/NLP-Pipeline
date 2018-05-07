@@ -1,15 +1,16 @@
 import numpy as np
 import spacy
 from spacy.attrs import LOWER, LIKE_URL, LIKE_EMAIL, ORTH, IS_PUNCT, LEMMA, IS_OOV
-from spacy.pipeline import Tagger, DependencyParser, EntityRecognizer
 import gensim
+from gensim.models.doc2vec import TaggedDocument
+from gensim.models import Doc2Vec
 import tensorflow as tf
 import os
 
 '''
 TODO - 
 
-1) Make nlp object init make more sense
+1) Make nlp object init make more sense - IMPORTANT
 2) Add assert statements for assuring parameters are correct
 3) Add sentence t
 4) Add multiple contexts to tfrecords writer function
@@ -21,7 +22,7 @@ class SpacyProcessor:
 
     def __init__(self, textfile, max_length, gn_path=None, use_google_news=True,
                  nlp=None, skip="<SKIP>", merge=False, num_threads=8, delete_punctuation=False,
-                 token_type="lower", skip_oov=False):
+                 token_type="lower", skip_oov=False, save_tokenized_text_data=False, bad_deps=("amod", "compound")):
 
         """Summary
 
@@ -51,6 +52,8 @@ class SpacyProcessor:
         self.delete_punctuation = delete_punctuation
         self.token_type = token_type
         self.skip_oov = skip_oov
+        self.save_tokenized_text_data = save_tokenized_text_data
+        self.bad_deps = bad_deps
 
         # TODO - This is a mess. Clean it up.
         if self.nlp == None:
@@ -99,7 +102,11 @@ class SpacyProcessor:
     def tokenize(self):
         # Read in text data from textfile path
         self.texts = open(self.textfile).read().split('\n')
-        # Init data
+
+        # Get number of documents supplied
+        self.num_docs = len(self.texts)
+
+        # Init data as a bunch of zeros - shape [num_texts, max_length]
         self.data = np.zeros((len(self.texts), self.max_length), dtype=np.uint64)
 
         # Add the skip token to the vocab, creating a unique hash for it
@@ -107,82 +114,108 @@ class SpacyProcessor:
         self.skip = self.nlp.vocab.strings[self.skip]
         self.data[:] = self.skip
 
-        self.bad_deps = ("amod", "compound", "punct")
+        # Make array to store row numbers of documents that must be deleted
+        self.purged_docs = []
+
+        # This array will hold tokenized text data if it is asked for
+        if self.save_tokenized_text_data:
+            self.text_data = []
 
         # REMOVE THIS...It should be at the doc.to_array line where LOWER is
         attr = LOWER
         for row, doc in enumerate(self.nlp.pipe(self.texts, n_threads=self.num_threads, batch_size=10000)):
+            try:
+                if self.merge:
+                    # Make list to hold merged phrases. Necessary to avoid buggy spacy merge implementation
+                    phrase_list = []
+                    # Merge noun phrases into single tokens
+                    for phrase in list(doc.noun_chunks):
+                        while len(phrase) > 1 and phrase[0].dep_ not in self.bad_deps:
+                            phrase = phrase[1:]
+                        if len(phrase) > 1:
+                            phrase_list.append(phrase)
 
-            if self.merge:
-                # Make list to hold merged phrases. Necessary to avoid buggy spacy merge implementation
-                phrase_list = []
-                # Merge noun phrases into single tokens
-                for phrase in list(doc.noun_chunks):
-                    while len(phrase) > 1 and phrase[0].dep_ not in self.bad_deps:
-                        phrase = phrase[1:]
-                    if len(phrase) > 1:
-                        phrase_list.append(phrase)
+                    # Merge phrases onto doc using doc.merge. Phrase.merge breaks.
+                    if len(phrase_list) > 0:
+                        for _phrase in phrase_list:
+                            doc.merge(start_idx=_phrase[0].idx,
+                                      end_idx=_phrase[len(_phrase) - 1].idx + len(_phrase[len(_phrase) - 1]),
+                                      tag=_phrase[0].tag_,
+                                      lemma='_'.join([token.text for token in _phrase]),
+                                      ent_type=_phrase[0].ent_type_)
+                    ent_list = []
+                    # Iterate over named entities
+                    for ent in doc.ents:
+                        if len(ent) > 1:
+                            ent_list.append(ent)
 
-                # Merge phrases onto doc using doc.merge. Phrase.merge breaks.
-                if len(phrase_list) > 0:
-                    for _phrase in phrase_list:
-                        doc.merge(start_idx=_phrase[0].idx,
-                                  end_idx=_phrase[len(_phrase) - 1].idx + len(_phrase[len(_phrase) - 1]),
-                                  tag=_phrase[0].tag_,
-                                  lemma='_'.join([token.text for token in _phrase]),
-                                  ent_type=_phrase[0].ent_type_)
-                ent_list = []
-                # Iterate over named entities
-                for ent in doc.ents:
-                    if len(ent) > 1:
-                        ent_list.append(ent)
+                    # Merge entities onto doc using doc.merge. ent.merge breaks.
+                    if len(ent_list) > 0:
+                        for _ent in ent_list:
+                            doc.merge(start_idx=_ent[0].idx,
+                                      end_idx=_ent[len(_ent) - 1].idx + len(_ent[len(_ent) - 1]),
+                                      tag=_ent.root.tag_,
+                                      lemma='_'.join([token.text for token in _ent]),
+                                      ent_type=_ent[0].ent_type_)
 
-                # Merge entities onto doc using doc.merge. ent.merge breaks.
-                if len(ent_list) > 0:
-                    for _ent in ent_list:
-                        doc.merge(start_idx=_ent[0].idx,
-                                  end_idx=_ent[len(_ent) - 1].idx + len(_ent[len(_ent) - 1]),
-                                  tag=_ent.root.tag_,
-                                  lemma='_'.join([token.text for token in _ent]),
-                                  ent_type=_ent[0].ent_type_)
+                    if self.save_tokenized_text_data:
+                        doc_text = []
 
-                # TODO - Option for returning tokenized text data?
-                for token in doc:
-                    text = token.text.replace(" ", "_")
-                    if token.is_oov:
+                    # TODO - Option for returning tokenized text data?
+                    for token in doc:
+                        # Replaces spaces between phrases with underscore
+                        text = token.text.replace(" ", "_")
+                        # Get the string token for the given token type
                         if self.token_type == "lower":
-                            self.nlp.vocab.strings.add(token.lower_)
+                            _token = token.lower_
                         elif self.token_type == "lemma":
-                            self.nlp.vocab.strings.add(token.lemma_)
+                            _token = token.lemma_
                         else:
-                            self.nlp.vocab.strings.add(token.orth_)
+                            _token = token.orth_
 
-            # Options for how to tokenize
-            if self.token_type == "lower":
-                dat = doc.to_array([LOWER, LIKE_EMAIL, LIKE_URL, IS_OOV, IS_PUNCT])
-            elif self.token_type == "lemma":
-                dat = doc.to_array([LEMMA, LIKE_EMAIL, LIKE_URL, IS_OOV, IS_PUNCT])
-            else:
-                dat = doc.to_array([ORTH, LIKE_EMAIL, LIKE_URL, IS_OOV, IS_PUNCT])
+                        # Add token to spacy string list so we can use oov as known hash tokens
+                        if token.is_oov:
+                            self.nlp.vocab.strings.add(_token)
 
-            if len(dat) > 0:
-                msg = "Negative indices reserved for special tokens"
-                assert dat.min() >= 0, msg
-                if self.skip_oov:
-                    # Get Indexes of email and URL and oov tokens
-                    idx = (dat[:, 1] > 0) | (dat[:, 2] > 0) | (dat[:, 3] > 0)
+                        if self.save_tokenized_text_data:
+                            doc_text.append(_token)
+
+                    if self.save_tokenized_text_data:
+                        self.text_data.append(doc_text)
+
+                # Options for how to tokenize
+                if self.token_type == "lower":
+                    dat = doc.to_array([LOWER, LIKE_EMAIL, LIKE_URL, IS_OOV, IS_PUNCT])
+                elif self.token_type == "lemma":
+                    dat = doc.to_array([LEMMA, LIKE_EMAIL, LIKE_URL, IS_OOV, IS_PUNCT])
                 else:
-                    # Get Indexes of email and URL tokens
-                    idx = (dat[:, 1] > 0) | (dat[:, 2] > 0)
-                    # Replace email and URL tokens with skip token
-                dat[idx] = self.skip
-                # Delete punctuation
-                if self.delete_punctuation:
-                    delete = np.where(dat[:, 3] == 1)
-                    dat = np.delete(dat, delete, 0)
-                length = min(len(dat), self.max_length)
-                self.data[row, :length] = dat[:length, 0].ravel()
+                    dat = doc.to_array([ORTH, LIKE_EMAIL, LIKE_URL, IS_OOV, IS_PUNCT])
 
+                if len(dat) > 0:
+                    msg = "Negative indices reserved for special tokens"
+                    assert dat.min() >= 0, msg
+                    if self.skip_oov:
+                        # Get Indexes of email and URL and oov tokens
+                        idx = (dat[:, 1] > 0) | (dat[:, 2] > 0) | (dat[:, 3] > 0)
+                    else:
+                        # Get Indexes of email and URL tokens
+                        idx = (dat[:, 1] > 0) | (dat[:, 2] > 0)
+                        # Replace email and URL tokens with skip token
+                    dat[idx] = self.skip
+                    # Delete punctuation
+                    if self.delete_punctuation:
+                        delete = np.where(dat[:, 3] == 1)
+                        dat = np.delete(dat, delete, 0)
+                    length = min(len(dat), self.max_length)
+                    self.data[row, :length] = dat[:length, 0].ravel()
+            except Exception as e:
+                print("Warning! Document", row,
+                      "broke, likely due to spaCy merge issues.\nMore info at thier github, issues #1547 and #1474")
+                self.purged_docs.append(row)
+                continue
+
+        # If necessary, delete documents that failed to tokenize correctly.
+        self.data = np.delete(self.data, self.purged_docs, 0).astype(np.uint64)
         # Unique tokens
         self.uniques = np.unique(self.data)
         # Saved Spacy Vocab
@@ -312,6 +345,25 @@ class SpacyProcessor:
         words = words.join([self.hash_to_word[seq[i]] for i in range(seq.shape[0])])
         return words
 
+    def load_gensim_doc2vec(self, label=None, vector_size=128, window=5, min_count=5, workers=2):
+        '''NOTE: To run this, make sure you had save_tokenized_text_data set to True when running tokenizer'''
+        doc2vec_data = []
+
+        # If user supplies labels (in same length as number of docs), we can use those
+        if label == None:
+            label = np.arange(len(self.text_data)).tolist()
+
+        # Loop through text data and format it for doc2vec compatability
+        for i, d in enumerate(self.text_data):
+            doc2vec_data.append(TaggedDocument(d, [label[i]]))
+
+        model = Doc2Vec(vector_size=vector_size,
+                        window=window,
+                        min_count=min_count,
+                        workers=workers)
+
+        return model, doc2vec_data
+
     def make_example(self, sequence, context=None):
         # The object we return
         ex = tf.train.SequenceExample()
@@ -371,7 +423,7 @@ class SpacyProcessor:
         else:
             options = None
 
-        # Using tfrecord writer, loop through data and write to tfrecords file
+        # TODO - Test context. currently hasnt been tested
         with tf.python_io.TFRecordWriter(outfile, options=options) as writer:
             # Loop through data and create a serialized example for each
             for i, d in enumerate(data):
