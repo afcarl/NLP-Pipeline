@@ -1,6 +1,7 @@
 import numpy as np
 import spacy
 from spacy.attrs import LOWER, LIKE_URL, LIKE_EMAIL, ORTH, IS_PUNCT, LEMMA, IS_OOV
+from spacy.pipeline import Tagger, DependencyParser, EntityRecognizer
 import gensim
 from gensim.models.doc2vec import TaggedDocument
 from gensim.models import Doc2Vec
@@ -16,16 +17,17 @@ TODO -
 4) Add multiple contexts to tfrecords writer function
 5) Add inferred compression type based off of file name in tfrecords writer function
 '''
-
-
 class SpacyProcessor:
 
-    def __init__(self, textfile, max_length, gn_path=None, use_google_news=True,
-                 nlp=None, skip="<SKIP>", merge=False, num_threads=8, delete_punctuation=False,
-                 token_type="lower", skip_oov=False, save_tokenized_text_data=False, bad_deps=("amod", "compound")):
+    def __init__(self, textfile, max_length, gn_path=None, use_google_news=False,
+                nlp=None, skip="<SKIP>", merge=False, num_threads=8, delete_punctuation=False,
+                token_type="lower", skip_oov=False, save_tokenized_text_data=False, bad_deps=("amod", "compound")):
+        
+
+
 
         """Summary
-
+        
         Args:
             textfile (str): Path to the line delimited text file
             max_length (int): Length to limit/pad sequences to
@@ -37,10 +39,12 @@ class SpacyProcessor:
             num_threads (int, optional): Number of threads to parallelize the pipeline
             delete_punctuation (bool, optional): When set to true, punctuation will be deleted when tokenizing
             token_type (str, optional): String denoting type of token for tokenization. Options are "lower", "lemma", and "orth"
-            skip_oov (bool, optional): When set to true, it will replace out of vocabulary words with skip token.
+            skip_oov (bool, optional): When set to true, it will replace out of vocabulary words with skip token. 
                                        Note: Setting this to false when planning to initialize random vectors will allow for learning
                                        the out of vocabulary words/phrases.
         """
+
+
 
         self.gn_path = gn_path
         self.textfile = textfile
@@ -64,7 +68,7 @@ class SpacyProcessor:
         else:
             if os.path.exists(self.nlp):
                 # This would load a saved spacy object from nlp path
-                # self.nlp = spacy.load(self.nlp)
+                #self.nlp = spacy.load(self.nlp)
                 # This loads spacy object en_core_web_lg with the addition of saved gn vectors
                 self.nlp = spacy.load("en_core_web_lg", vectors="en_google")
             elif use_google_news:
@@ -99,16 +103,17 @@ class SpacyProcessor:
         # Set the vectors for our nlp object to the google news vectors
         self.nlp.vocab.vectors = spacy.vocab.Vectors(data=self.model.syn0, keys=self.keys)
 
+
     def tokenize(self):
         # Read in text data from textfile path
         self.texts = open(self.textfile).read().split('\n')
 
         # Get number of documents supplied
         self.num_docs = len(self.texts)
-
+        
         # Init data as a bunch of zeros - shape [num_texts, max_length]
         self.data = np.zeros((len(self.texts), self.max_length), dtype=np.uint64)
-
+        
         # Add the skip token to the vocab, creating a unique hash for it
         self.nlp.vocab.strings.add(self.skip)
         self.skip = self.nlp.vocab.strings[self.skip]
@@ -134,7 +139,7 @@ class SpacyProcessor:
                             phrase = phrase[1:]
                         if len(phrase) > 1:
                             phrase_list.append(phrase)
-
+                    
                     # Merge phrases onto doc using doc.merge. Phrase.merge breaks.
                     if len(phrase_list) > 0:
                         for _phrase in phrase_list:
@@ -148,7 +153,7 @@ class SpacyProcessor:
                     for ent in doc.ents:
                         if len(ent) > 1:
                             ent_list.append(ent)
-
+                    
                     # Merge entities onto doc using doc.merge. ent.merge breaks.
                     if len(ent_list) > 0:
                         for _ent in ent_list:
@@ -158,35 +163,36 @@ class SpacyProcessor:
                                       lemma='_'.join([token.text for token in _ent]),
                                       ent_type=_ent[0].ent_type_)
 
-                    if self.save_tokenized_text_data:
-                        doc_text = []
+                # Create temp list for holding doc text
+                if self.save_tokenized_text_data:
+                    doc_text = []
 
-                    # TODO - Option for returning tokenized text data?
-                    for token in doc:
-                        # Replaces spaces between phrases with underscore
-                        text = token.text.replace(" ", "_")
-                        # Get the string token for the given token type
-                        if self.token_type == "lower":
-                            _token = token.lower_
-                        elif self.token_type == "lemma":
-                            _token = token.lemma_
-                        else:
-                            _token = token.orth_
+                # Loop through tokens in doc
+                for token in doc:
+                    # Replaces spaces between phrases with underscore
+                    text = token.text.replace(" ", "_")
+                    # Get the string token for the given token type
+                    if self.token_type=="lower":
+                        _token = token.lower_
+                    elif self.token_type=="lemma":
+                        _token = token.lemma_
+                    else:
+                        _token = token.orth_
 
-                        # Add token to spacy string list so we can use oov as known hash tokens
-                        if token.is_oov:
-                            self.nlp.vocab.strings.add(_token)
-
-                        if self.save_tokenized_text_data:
-                            doc_text.append(_token)
+                    # Add token to spacy string list so we can use oov as known hash tokens
+                    if token.is_oov:
+                        self.nlp.vocab.strings.add(_token)
 
                     if self.save_tokenized_text_data:
-                        self.text_data.append(doc_text)
+                        doc_text.append(_token)
+
+                if self.save_tokenized_text_data:
+                    self.text_data.append(doc_text)
 
                 # Options for how to tokenize
-                if self.token_type == "lower":
+                if self.token_type=="lower":
                     dat = doc.to_array([LOWER, LIKE_EMAIL, LIKE_URL, IS_OOV, IS_PUNCT])
-                elif self.token_type == "lemma":
+                elif self.token_type=="lemma":
                     dat = doc.to_array([LEMMA, LIKE_EMAIL, LIKE_URL, IS_OOV, IS_PUNCT])
                 else:
                     dat = doc.to_array([ORTH, LIKE_EMAIL, LIKE_URL, IS_OOV, IS_PUNCT])
@@ -199,18 +205,17 @@ class SpacyProcessor:
                         idx = (dat[:, 1] > 0) | (dat[:, 2] > 0) | (dat[:, 3] > 0)
                     else:
                         # Get Indexes of email and URL tokens
-                        idx = (dat[:, 1] > 0) | (dat[:, 2] > 0)
-                        # Replace email and URL tokens with skip token
+                        idx = (dat[:, 1] > 0) | (dat[:, 2] > 0)                    
+                    # Replace email and URL tokens with skip token
                     dat[idx] = self.skip
                     # Delete punctuation
                     if self.delete_punctuation:
-                        delete = np.where(dat[:, 3] == 1)
+                        delete = np.where(dat[:,3]==1)
                         dat = np.delete(dat, delete, 0)
                     length = min(len(dat), self.max_length)
                     self.data[row, :length] = dat[:length, 0].ravel()
             except Exception as e:
-                print("Warning! Document", row,
-                      "broke, likely due to spaCy merge issues.\nMore info at thier github, issues #1547 and #1474")
+                print("Warning! Document", row, "broke, likely due to spaCy merge issues.\nMore info at thier github, issues #1547 and #1474")
                 self.purged_docs.append(row)
                 continue
 
@@ -225,11 +230,11 @@ class SpacyProcessor:
         # Manually putting in this hash for the padding ID
         self.hash_to_word[self.skip] = '<SKIP>'
         # If lemma, manually put in hash for the pronoun ID
-        if self.token_type == "lemma":
+        if self.token_type=="lemma":
             self.hash_to_word[self.nlp.vocab.strings["-PRON-"]] = "-PRON-"
-
+        
         for v in self.uniques:
-            if v != self.skip:
+            if v!= self.skip:
                 try:
                     if self.token_type == "lower":
                         self.hash_to_word[v] = self.nlp.vocab[v].lower_
@@ -240,31 +245,33 @@ class SpacyProcessor:
                 except:
                     pass
 
+
+
     def _compute_embed_matrix(self, random=False, embed_size=256, compute_tensor=False, tf_as_variable=True):
         """Computes the embedding matrix in a couple of ways. You can either initialize it randomly
-        or you can load the embedding matrix from pretrained embeddings.
-
+        or you can load the embedding matrix from pretrained embeddings. 
+        
         Additionally, you can use this function to compute your embedding matrix as a tensorflow
         variable or tensorflow constant.
-
+        
         The numpy embedding matrix will be stored in self.embed_matrix
         The tensorflow embed matrix will be stored in self.embed_matrix_tensor if compute_tf is True
-
+        
         Args:
             random (bool, optional): If set to true, it will initialize the embedding matrix randomly
             embed_size (int, optional): If setting up random embedding matrix, you can control the embedding size.
-            compute_tensor (bool, optional):
+            compute_tensor (bool, optional): 
                 When set to True, it will turn the embedding matrix into a tf variable or constant.
                 See tf_as_variable to control whether embed_matrix_tensor is a variable or constant.
-            tf_as_variable (bool, optional): If True AND compute_tf is True, this will save embed_matrix_tensor as a tf variable.
+            tf_as_variable (bool, optional): If True AND compute_tf is True, this will save embed_matrix_tensor as a tf variable. 
                 If this is set to False, it will compute embed_matrix_tensor as a tf constant.
-
+        
         """
-        # Returns list of values and their frequencies
-        self.unique, self.freqs = np.unique(self.data, return_counts=True)
+        #Returns list of values and their frequencies
+        self.unique, self.freqs= np.unique(self.data, return_counts=True)
 
         ##Sort unique hash id values by frequency
-        self.hash_ids = [x for _, x in sorted(zip(self.freqs, self.unique), reverse=True)]
+        self.hash_ids = [x for _,x in sorted(zip(self.freqs, self.unique), reverse=True)]
         self.freqs = sorted(self.freqs, reverse=True)
 
         ##Create word id's starting at 0
@@ -277,7 +284,7 @@ class SpacyProcessor:
         if random:
             self.embed_size = embed_size
             self.vocab_size = len(self.unique)
-            self.embed_matrix = np.random.uniform(-1, 1, [self.vocab_size, self.embed_size])
+            self.embed_matrix = np.random.uniform(-1,1,[self.vocab_size, self.embed_size])
             if compute_tensor:
                 self.compute_embedding_tensor(variable=tf_as_variable)
             return
@@ -296,9 +303,9 @@ class SpacyProcessor:
             if np.array_equal(zeros, vector):
                 # TODO Get rid of this random uniform vector!!
                 # If oov, init a random uniform vector
-                vector = np.random.uniform(-1, 1, 300)
+                vector = np.random.uniform(-1,1,300)
 
-            # Append current vector to our embed matrix
+            # Append current vector to our embed matrix         
             embed_matrix.append(vector)
 
         # Save np embed matrix to the class for later use
@@ -307,9 +314,10 @@ class SpacyProcessor:
         if compute_tensor:
             self.compute_embedding_tensor(variable=tf_as_variable)
 
+
     def compute_embedding_tensor(self, variable=True):
         """Summary
-
+        
         Args:
             variable (bool, optional): If variable is set to True, it will compute a tensorflow variable.
                                        If False, it will compute a tensorflow constant
@@ -322,11 +330,9 @@ class SpacyProcessor:
         # Create embed matrix as tf constant
         else:
             self.embed_matrix_tensor = tf.Constant(embed_matrix_tensor)
-
     def convert_data_to_word2vec_indexes(self):
         # Uses hash to idx dictionary to map data to indexes
         self.idx_data = np.vectorize(self.hash_to_idx.get)(self.data)
-
     def trim_zeros_from_idx_data(self):
         """This will trim the tail zeros from the idx_data variable
         and replace the idx_data variable.
@@ -348,7 +354,7 @@ class SpacyProcessor:
     def load_gensim_doc2vec(self, label=None, vector_size=128, window=5, min_count=5, workers=2):
         '''NOTE: To run this, make sure you had save_tokenized_text_data set to True when running tokenizer'''
         doc2vec_data = []
-
+        
         # If user supplies labels (in same length as number of docs), we can use those
         if label == None:
             label = np.arange(len(self.text_data)).tolist()
@@ -365,11 +371,12 @@ class SpacyProcessor:
 
         return model, doc2vec_data
 
+    
     def make_example(self, sequence, context=None):
         # The object we return
         ex = tf.train.SequenceExample()
         # A non-sequential feature of our example - Replace with doc IDs
-        if context == None:
+        if context==None:
             context = self.doc_id
         else:
             context = context
@@ -386,7 +393,7 @@ class SpacyProcessor:
         # The object we return
         ex = tf.train.SequenceExample()
         # A non-sequential feature of our example - Replace with doc IDs
-        if context == None:
+        if context==None:
             context = self.doc_id
         else:
             context = context
@@ -400,11 +407,9 @@ class SpacyProcessor:
             fl_tokens.feature.add().int64_list.value.append(token)
             fl_labels.feature.add().int64_list.value.append(label)
         return ex
-
-    def write_data_to_tfrecords(self, outfile, compression="GZIP", data=np.array([]),
-                                labels=np.array([]), context=np.array([]), sequence_desc="tokens", labels_desc="labels",
-                                context_desc="doc_id"):
-        if data.any() == False:
+    def write_data_to_tfrecords(self, outfile, compression="GZIP", data = np.array([]),
+                                labels=np.array([]), context=np.array([]), sequence_desc = "tokens", labels_desc="labels", context_desc="doc_id"):
+        if data.any()==False:
             data = self.idx_data
 
         # What we want the feature column for context features to be named
@@ -417,9 +422,9 @@ class SpacyProcessor:
         # Create int to hold unique document IDs, as these will be our context feature by default.
         self.doc_id = 1
 
-        if compression == "GZIP":
+        if compression=="GZIP":
             options = tf.python_io.TFRecordOptions(tf.python_io.TFRecordCompressionType.GZIP)
-        elif compression == "ZLIB":
+        elif compression=="ZLIB":
             options = tf.python_io.TFRecordOptions(tf.python_io.TFRecordCompressionType.ZLIB)
         else:
             options = None
