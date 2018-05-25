@@ -1,4 +1,4 @@
-from spacy_helper import SpacyProcessor
+from nlp_pipeline import SpacyProcessor
 import numpy as np
 import tensorflow as tf
 
