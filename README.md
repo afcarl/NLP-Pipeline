@@ -16,7 +16,7 @@ The returned data from this function is a 2d array of SpaCy hashes.
 ### Running the Processor
 ```python
 # Initialize Spacy Processor
-SP = SpacyProcessor(textfile, 140, . . .)
+SP = NlpPipeline(textfile, 140, . . .)
 
 data = SP.data
 
