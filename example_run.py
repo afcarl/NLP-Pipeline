@@ -1,4 +1,4 @@
-from nlp_pipeline import SpacyProcessor
+from nlp_pipeline import NlpPipeline
 import numpy as np
 import tensorflow as tf
 
@@ -10,7 +10,7 @@ textfile = "test_doc.txt"
 spacy_nlp_path = "google_news_model"
 
 # Initialize spacy processor
-SP = SpacyProcessor(textfile, 140, use_google_news=True, merge=True, nlp=spacy_nlp_path, token_type="lower")
+SP = NlpPipeline(textfile, 140, use_google_news=True, merge=True, nlp=spacy_nlp_path, token_type="lower")
 
 # Computes embedding matrix for you
 SP._compute_embed_matrix(random=True)
